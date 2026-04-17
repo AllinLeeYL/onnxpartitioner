@@ -3,7 +3,7 @@ import onnx
 from onnx import shape_inference, numpy_helper, helper, TensorProto
 # import onnxruntime as ort
 import numpy as np
-import onnx_graphsurgeon as gs
+# import onnx_graphsurgeon as gs
 from _buffer import Buffer
 from common import remove_nodes, get_value_info
 
@@ -70,8 +70,9 @@ def parition_conv(graph, node, hardware):
         o_h = min(o_h, o_h_by_input)
         q, r = divmod(oH, o_h)
         # assert(r==0)
+        n_seg = q if r==0 else q+1
         # insert slice node
-        for i in range(0, q):
+        for i in range(0, n_seg):
             slice_node = helper.make_node(
                 "Slice",
                 inputs=[In_name, 
@@ -103,7 +104,7 @@ def parition_conv(graph, node, hardware):
             graph.value_info.append(ends_tensor_info)
             graph.value_info.append(axes_tensor_info)
         # insert sub Conv node
-        for i in range(q):
+        for i in range(n_seg):
             pad_top, pad_left, pad_bottom, pad_right = pads # top left bottom right
             pad_top = pad_top if i==0 else 0
             pad_bottom = pad_bottom if i==q-1 else 0
@@ -119,22 +120,25 @@ def parition_conv(graph, node, hardware):
         # insert Concat node
         concat_node = helper.make_node(
             "Concat",
-            inputs=[node.name+'_out_'+str(i) for i in range(q)],
+            inputs=[node.name+'_out_'+str(i) for i in range(n_seg)],
             outputs=[Out_name],
             axis=1
         )
         graph.node.append(concat_node)
         # insert values info
-        for i in range(q):
+        for i in range(n_seg):
+            starts = max(o_h*stride*i-(k_h-1)//2, 0)
+            ends = min(o_h*stride*(i+1)+(k_h-1)//2, iH)
+            o_h_t = o_h if i != n_seg-1 else oH - (i*o_h)
             in_tensor_info = helper.make_tensor_value_info(
                 In_name+'_slice_'+str(i),
                 TensorProto.FLOAT,
-                [iN, iC, min(o_h*stride*(i+1)+k_h-1, iH)-max(o_h*stride*i-k_h+1, 0), iW]
+                [iN, iC, ends-starts, iW]
             )
             out_tensor_info = helper.make_tensor_value_info(
                 node.name+'_out_'+str(i),
                 TensorProto.FLOAT,
-                [oN, oC, o_h, oW]
+                [oN, oC, o_h_t, oW]
             )
             graph.value_info.append(in_tensor_info)
             graph.value_info.append(out_tensor_info)

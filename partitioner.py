@@ -4,7 +4,7 @@ from onnx import shape_inference, numpy_helper, helper, TensorProto
 # import onnxruntime as ort
 import argparse
 import numpy as np
-import onnx_graphsurgeon as gs
+# import onnx_graphsurgeon as gs
 
 from _buffer import Buffer
 from _conv_partitioner import parition_conv, calculate_conv_buf
@@ -127,7 +127,7 @@ if __name__ == '__main__':
     onnx.checker.check_model(model)
     model = shape_inference.infer_shapes(model)
     
-    hardware = {'input_buffer': Buffer(256, 8192*8),
+    hardware = {'input_buffer': Buffer(256, 8192),
                 'output_buffer': Buffer(256, 4096)}
 
     partitioner = Partitioner(hardware)
