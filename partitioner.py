@@ -6,8 +6,8 @@ import argparse
 import numpy as np
 # import onnx_graphsurgeon as gs
 
-from _buffer import Buffer
-from _conv_partitioner import parition_conv, calculate_conv_buf
+from common import Buffer
+from _conv_partitioner import conv_exceed_hardware_limit, partition_conv
 
 
 def parse_argument():
@@ -66,17 +66,8 @@ class Partitioner:
         pass
 
 
-    def _update(self):
-        # update init_map
-        self._init_map = {
-            init.name: numpy_helper.to_array(init)
-            for init in self._graph.initializer
-        }
-
-
     def partition(self, graph):
         self._graph = graph
-        self._update()
         while self._partition_run():
             pass
         return self._graph
@@ -89,31 +80,19 @@ class Partitioner:
                 self._split(node)
                 partitioned = True
                 break
-        self._update()
         return partitioned
 
 
     def _exceed_hardware_limit(self, node):
-        in_buf, weight_buf, out_buf = self._calculate_buf(node)
-        return (
-            in_buf > hardware['input_buffer'] or 
-            out_buf > hardware['output_buffer']
-        )
-
-
-    def _calculate_buf(self, node):
-        in_buf = Buffer(0, 0)
-        w_buf = Buffer(0, 0)
-        out_buf = Buffer(0, 0)
         if node.op_type == 'Conv':
-            in_buf, w_buf, out_buf = calculate_conv_buf(self._graph, node)
-
-        return in_buf, w_buf, out_buf
+            return conv_exceed_hardware_limit(self._graph, node, hardware)
+            
+        return False
 
 
     def _split(self, node):
         if node.op_type == 'Conv':
-            self._graph = parition_conv(self._graph, node, self.hardware)
+            self._graph = partition_conv(self._graph, node, self.hardware)
 
 
 # input: model + hardware parameters
