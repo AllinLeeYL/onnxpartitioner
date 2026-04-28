@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 def conv_exceed_hardware_limit(graph, node, hardware):
     buffers = calculate_conv_buf(graph, node)
-    for buf_name, buf, in hardware.items():
+    for buf_name, buf, in buffers.items():
         if buf > hardware[buf_name]:
             return True
     
@@ -25,7 +25,7 @@ def partition_conv(graph, node, hardware):
     plan = compute_partition_plan(spec, hardware)
 
     # Step 3: apply transformation
-    apply_conv_partition(graph, node, spec, plan)
+    graph = apply_conv_partition(graph, node, spec, plan)
 
     return graph
 
@@ -40,6 +40,7 @@ def conv_params(graph, node):
     in_name = node.input[0]
     out_name = node.output[0]
     kernel_name = node.input[1]
+    bias_name = node.input[2]
     value_info = get_value_info(graph)
     strides = next((list(attr.ints) for attr in node.attribute if attr.name == "strides"), [1, 1])
     pads = next((list(attr.ints) for attr in node.attribute if attr.name == "pads"), [1, 1, 1, 1])
@@ -58,6 +59,7 @@ def conv_params(graph, node):
         k_h=value_info[kernel_name][2],
         k_w=value_info[kernel_name][3],
         k_name=kernel_name,
+        b_name=bias_name,
         batch=value_info[out_name][0],
         strides=strides,
         pads=pads
@@ -122,27 +124,51 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
         ends = min(plan.o_h * spec.strides[0] * (i + 1) + spec.k_h - 1, spec.in_h)
 
         # Add tensor metadata for slice parameters
-        starts_tensor_info = helper.make_tensor_value_info(
-            spec.in_name + '_slice_starts_' + str(i),
-            TensorProto.FLOAT,
-            [0, 0, starts, 0]
+        starts_tensor = helper.make_tensor(
+            name=spec.in_name + '_slice_starts_' + str(i),
+            data_type=TensorProto.INT32,
+            dims=[4],
+            vals=[0, 0, starts, 0]
         )
-        ends_tensor_info = helper.make_tensor_value_info(
-            spec.in_name + '_slice_ends_' + str(i),
-            TensorProto.FLOAT,
-            [spec.batch, spec.in_channel, ends, spec.in_w]
+        ends_tensor = helper.make_tensor(
+            name=spec.in_name + '_slice_ends_' + str(i),
+            data_type=TensorProto.INT32,
+            dims=[4],
+            vals=[0, 0, ends, 0]
         )
-        axes_tensor_info = helper.make_tensor_value_info(
-            spec.in_name + '_slice_axes' + str(i),
-            TensorProto.FLOAT,
-            [0, 1, 2, 3]
+        axes_tensor = helper.make_tensor(
+            name=spec.in_name + '_slice_axes_' + str(i),
+            data_type=TensorProto.INT32,
+            dims=[4],
+            vals=[0, 1, 2, 3]
         )
-
-        graph.value_info.extend([
-            starts_tensor_info,
-            ends_tensor_info,
-            axes_tensor_info
+        graph.initializer.extend([
+            starts_tensor,
+            ends_tensor,
+            axes_tensor
         ])
+
+        # starts_tensor_info = helper.make_tensor_value_info(
+        #     spec.in_name + '_slice_starts_' + str(i),
+        #     TensorProto.FLOAT,
+        #     [0, 0, starts, 0]
+        # )
+        # ends_tensor_info = helper.make_tensor_value_info(
+        #     spec.in_name + '_slice_ends_' + str(i),
+        #     TensorProto.FLOAT,
+        #     [spec.batch, spec.in_channel, ends, spec.in_w]
+        # )
+        # axes_tensor_info = helper.make_tensor_value_info(
+        #     spec.in_name + '_slice_axes' + str(i),
+        #     TensorProto.FLOAT,
+        #     [0, 1, 2, 3]
+        # )
+
+        # graph.value_info.extend([
+        #     starts_tensor_info,
+        #     ends_tensor_info,
+        #     axes_tensor_info
+        # ])
 
     # -------- Insert Conv nodes for each slice --------
     for i in range(plan.n_o_h_seg):
@@ -154,7 +180,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
 
         conv_node = helper.make_node(
             "Conv",
-            inputs=[spec.in_name + '_slice_' + str(i), spec.k_name],
+            inputs=[spec.in_name + '_slice_' + str(i), spec.k_name, spec.b_name],
             outputs=[node.name + '_out_' + str(i)],
             kernel_shape=[spec.k_h, spec.k_w],
             strides=spec.strides,
@@ -194,4 +220,5 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
 
     # -------- Remove original Conv node --------
     remove_nodes(graph, lambda n: n == node)
+    return graph
 

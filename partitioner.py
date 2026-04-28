@@ -93,6 +93,7 @@ class Partitioner:
     def _split(self, node):
         if node.op_type == 'Conv':
             self._graph = partition_conv(self._graph, node, self.hardware)
+            print("partitioned: ", node.name)
 
 
 # input: model + hardware parameters
@@ -115,5 +116,6 @@ if __name__ == '__main__':
     onnx.save(model, args.model[:-5]+"_partitioned.onnx")
 
     # Model metadata
-    # print("IR version:", model.ir_version)
+    print("IR version:", model.ir_version)
+    print(model.graph.initializer)
     # print("Producer:", model.producer_name)

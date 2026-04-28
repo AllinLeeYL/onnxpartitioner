@@ -19,6 +19,7 @@ def run_model(path, input_data):
 
 if __name__ == '__main__':
     args = parse_argument()
-    out1 = run_model(args.model1, {"input": np.random.randn(1,3,32,32).astype(np.float32)})
-    out2 = run_model(args.model2, {"input": np.random.randn(1,3,32,32).astype(np.float32)})
+    inp = np.random.randn(1,24, 256,256).astype(np.float32)
+    out1 = run_model(args.model1, {"input": inp})
+    out2 = run_model(args.model2, {"input": inp})
     print(np.allclose(out1[0], out2[0], atol=1e-5))

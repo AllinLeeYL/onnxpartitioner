@@ -23,13 +23,17 @@ class ConvSpec:
     out_name: str
     out_channel: int
 
-    # Parameters
+    # kernel
     k_h: int
     k_w: int
     k_name: str
+
+    # bias
+    b_name: str
+
+    # other params
     pads: tuple
     strides: tuple
-
     batch: int
 
 
@@ -43,7 +47,9 @@ def get_value_info(graph):
 
 
 def remove_nodes(graph, condition_fn):
-    
+    """
+    remove node in ONNX graph
+    """
     nodes = [
         n for n in graph.node
         if not condition_fn(n)
