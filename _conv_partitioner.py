@@ -193,7 +193,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
         "Concat",
         inputs=[node.name + '_out_' + str(i) for i in range(plan.n_o_h_seg)],
         outputs=[spec.out_name],
-        axis=1   # NOTE: concatenating along channel axis
+        axis=2   # NOTE: concatenating along height
     )
     graph.node.append(concat_node)
 

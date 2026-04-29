@@ -1,6 +1,6 @@
 import torch
 import onnx
-from onnx import shape_inference, numpy_helper, helper, TensorProto
+from onnx import shape_inference, numpy_helper, helper, version_converter
 # import onnxruntime as ort
 import argparse
 import numpy as np
@@ -113,9 +113,10 @@ if __name__ == '__main__':
     partitioner = Partitioner(hardware)
     partitioned_graph = partitioner.partition(model.graph)
     model = helper.make_model(partitioned_graph)
-    onnx.save(model, args.model[:-5]+"_partitioned.onnx")
+    converted_model = version_converter.convert_version(model, 25)
+    onnx.save(converted_model, args.model[:-5]+"_partitioned.onnx")
 
     # Model metadata
     print("IR version:", model.ir_version)
-    print(model.graph.initializer)
+    # print(model.graph.initializer)
     # print("Producer:", model.producer_name)
