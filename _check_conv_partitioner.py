@@ -34,7 +34,7 @@ class ConvOnlyNet(nn.Module):
             out_c = random.choice([i for i in range(16, 128)])
             k = random.choice([1, 3, 5, 7, 9, 11, 13])  # odd kernels
 
-            layers.append(nn.Conv2d(c, out_c, kernel_size=k, padding=random.choice([i for i in range(0, k-1)])))
+            layers.append(nn.Conv2d(c, out_c, kernel_size=k, padding=random.choice([i for i in range(0, k)])))
             # layers.append(nn.ReLU())
 
             c = out_c

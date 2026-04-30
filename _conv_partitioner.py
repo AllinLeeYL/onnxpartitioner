@@ -130,8 +130,8 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
     for i in range(0, plan.n_o_seg):
         # params
         pad_top, pad_left, pad_bottom, pad_right = spec.pads
-        pad_start, pad_end = pad_top, pad_bottom if plan.vertical else pad_left, pad_right
-        pad_other_start, pad_ohter_end = pad_left, pad_right if plan.vertical else pad_top, pad_bottom
+        pad_start, pad_end = (pad_top, pad_bottom) if plan.vertical else (pad_left, pad_right)
+        pad_other_start, pad_other_end = (pad_left, pad_right) if plan.vertical else (pad_top, pad_bottom)
         k = spec.k_h if plan.vertical else spec.k_w
         in_len = spec.in_h if plan.vertical else spec.in_w
         in_other_len = spec.in_w if plan.vertical else spec.in_h
@@ -187,8 +187,8 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
 
         # -------- Insert Conv nodes for each slice --------
         # Only apply original padding at boundaries
-        pad_top = pad_top if i == 0 else 0
-        pad_bottom = 0 if ends <= spec.in_h else min(pad_bottom, ends - spec.in_h)
+        pad_start = pad_start if i == 0 else 0
+        pad_end = 0 if ends <= in_len else min(pad_end, ends - in_len)
 
         conv_node = helper.make_node(
             "Conv",
@@ -197,16 +197,16 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             outputs=[node.name + '_out_' + str(i)],
             kernel_shape=[spec.k_h, spec.k_w],
             strides=spec.strides,
-            pads=[pad_top, pad_left, pad_bottom, pad_right]
+            pads=[pad_start, pad_other_start, pad_end, pad_other_end] if plan.vertical else [pad_other_start, pad_start, pad_other_end, pad_end]
         )
         graph.node.append(conv_node)
 
     # -------- Concatenate outputs back together --------
     concat_node = helper.make_node(
         "Concat",
-        inputs=[node.name + '_out_' + str(i) for i in range(plan.n_o_h_seg)],
+        inputs=[node.name + '_out_' + str(i) for i in range(plan.n_o_seg)],
         outputs=[spec.out_name],
-        axis=2   # NOTE: concatenating along height
+        axis=2 if plan.vertical else 3   # NOTE: concatenating along height/weight
     )
     graph.node.append(concat_node)
 
