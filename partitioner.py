@@ -66,11 +66,15 @@ class Partitioner:
         pass
 
 
-    def partition(self, graph):
-        self._graph = graph
+    def partition(self, model):
+        self._model = model
+        self._graph = model.graph
         while self._partition_run():
+            model = helper.make_model(self._graph)
+            self._model = shape_inference.infer_shapes(model)
+            self._graph = self._model.graph
             pass
-        return self._graph
+        return self._model
 
 
     def _partition_run(self):
@@ -93,7 +97,6 @@ class Partitioner:
     def _split(self, node):
         if node.op_type == 'Conv':
             self._graph = partition_conv(self._graph, node, self.hardware)
-            print("partitioned: ", node.name)
 
 
 # input: model + hardware parameters
@@ -105,15 +108,15 @@ if __name__ == '__main__':
         print("model file not ended with \".onnx\" may raise errors.")
     model = onnx.load(args.model)
     onnx.checker.check_model(model)
-    model = shape_inference.infer_shapes(model)
+    # model = shape_inference.infer_shapes(model)
     
     hardware = {'input_buffer': Buffer(256, 8192),
                 'output_buffer': Buffer(256, 4096)}
 
     partitioner = Partitioner(hardware)
-    partitioned_graph = partitioner.partition(model.graph)
-    model = helper.make_model(partitioned_graph)
-    converted_model = version_converter.convert_version(model, 25)
+    partitioned_model = partitioner.partition(model)
+    # model = helper.make_model(partitioned_graph)
+    converted_model = version_converter.convert_version(partitioned_model, 25)
     onnx.save(converted_model, args.model[:-5]+"_partitioned.onnx")
 
     # Model metadata

@@ -27,13 +27,16 @@ def partition_conv(graph, node, hardware):
     # Step 3: apply transformation
     graph = apply_conv_partition(graph, node, spec, plan)
 
+    print("Partition plan:", plan, "applied to", node.name)
+
     return graph
 
 
 @dataclass
 class _PartitionPlan:
-    n_o_h_seg: int # number of output height segment
-    o_h: int
+    n_o_seg: int # number of output height/weight segment
+    o_hw: int # size of output height/weight segment
+    vertical: bool # True: segment by height / False: by weight
 
 
 def conv_params(graph, node):
@@ -78,35 +81,62 @@ def compute_partition_plan(spec: ConvSpec, hardware):
         spec.in_channel > hardware['input_buffer'].channel_s:
         pass
     else:
-        # -------- Partition along height dimension --------
+        if spec.in_h > spec.in_w:
+            in_len = spec.in_w
+            out_len = spec.out_w
+            out_row = spec.out_h
+            k = spec.k_h
+            stride = spec.strides[0]
+        else:
+            in_len = spec.in_h
+            out_len = spec.out_h
+            out_row = spec.out_w
+            k = spec.k_w
+            stride = spec.strides[1]
+        # -------- Partition along height/weight dimension --------
 
-        # Compute max input tile height that fits in input buffer
+        # Compute max input tile height/weight that fits in input buffer
         i_h = max_multiplier_within_limit(
-            base=spec.in_w,
-            limit=hardware['input_buffer'].pixel_s - spec.in_w * (spec.k_h - 1)
+            base=in_len,
+            limit=hardware['input_buffer'].pixel_s - in_len * (k - 1)
         )
 
-        # Corresponding output height from input tiling
-        o_h_by_input = i_h // spec.strides[0]
+        # Corresponding output height/weight from input tiling
+        o_h_by_input = i_h // stride
 
-        # Compute max output tile height that fits in output buffer
+        # Compute max output tile height/weight that fits in output buffer
         o_h = max_multiplier_within_limit(
-            base=spec.out_w,
-            limit=hardware['output_buffer'].pixel_s
+            base=out_len,
+            limit=hardware['output_buffer'].pixel_s - out_len * (k - 1)
         )
 
-        # Final tile height constrained by both input and output limits
+        # Final tile height/weight constrained by both input and output limits
         o_h = min(o_h, o_h_by_input)
 
+        # if kernel is too big
+        if o_h <= 0:
+            raise RuntimeError("The kernel size is too big. Cannot partition.")
+
         # Number of segments needed to cover full output
-        q, r = divmod(spec.out_h, o_h)
+        q, r = divmod(out_row, o_h)
         n_seg = q if r == 0 else q + 1
-        return _PartitionPlan(o_h=o_h, n_o_h_seg=n_seg)
+        if spec.in_h > spec.in_w:
+            return _PartitionPlan(o_hw=o_h, n_o_seg=n_seg, vertical=True)
+        else:
+            return _PartitionPlan(o_hw=o_h, n_o_seg=n_seg, vertical=False)
 
 
 def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
-    # -------- Insert Slice nodes (split input feature map) --------
-    for i in range(0, plan.n_o_h_seg):
+    for i in range(0, plan.n_o_seg):
+        # params
+        pad_top, pad_left, pad_bottom, pad_right = spec.pads
+        pad_start, pad_end = pad_top, pad_bottom if plan.vertical else pad_left, pad_right
+        pad_other_start, pad_ohter_end = pad_left, pad_right if plan.vertical else pad_top, pad_bottom
+        k = spec.k_h if plan.vertical else spec.k_w
+        in_len = spec.in_h if plan.vertical else spec.in_w
+        in_other_len = spec.in_w if plan.vertical else spec.in_h
+        stride = spec.strides[0] if plan.vertical else spec.strides[1] # TODO: check which one is vertical?
+        # -------- Insert Slice nodes (split input feature map) --------
         slice_node = helper.make_node(
             "Slice",
             inputs=[
@@ -120,21 +150,28 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
         graph.node.append(slice_node)
 
         # Compute slice boundaries (include overlap for kernel)
-        starts = max(plan.o_h * spec.strides[0] * i - spec.k_h + 1, 0)
-        ends = min(plan.o_h * spec.strides[0] * (i + 1) + spec.k_h - 1, spec.in_h)
+        # starts = plan.o_h * spec.strides[0] * i - spec.k_h//2
+        starts = plan.o_hw * stride * i - pad_start
+        starts = max(starts, 0)
+        # ends = plan.o_h * spec.strides[0] * (i + 1) + spec.k_h//2
+        ends = plan.o_hw * stride * (i + 1) - pad_start + k//2
+        ends = min(ends, in_len)
+
+        if ends < 0 or starts > in_len:
+            raise RuntimeError("paddings are too big. kernel size=" + str(k) + ", padding=" + str(spec.pads))
 
         # Add tensor metadata for slice parameters
         starts_tensor = helper.make_tensor(
             name=spec.in_name + '_slice_starts_' + str(i),
             data_type=TensorProto.INT32,
             dims=[4],
-            vals=[0, 0, starts, 0]
+            vals=[0, 0, starts, 0] if plan.vertical else [0, 0, 0, starts]
         )
         ends_tensor = helper.make_tensor(
             name=spec.in_name + '_slice_ends_' + str(i),
             data_type=TensorProto.INT32,
             dims=[4],
-            vals=[0, 0, ends, 0]
+            vals=[spec.batch, spec.in_channel, ends, spec.in_w] if plan.vertical else [spec.batch, spec.in_channel, spec.in_h, ends]
         )
         axes_tensor = helper.make_tensor(
             name=spec.in_name + '_slice_axes_' + str(i),
@@ -148,38 +185,14 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             axes_tensor
         ])
 
-        # starts_tensor_info = helper.make_tensor_value_info(
-        #     spec.in_name + '_slice_starts_' + str(i),
-        #     TensorProto.FLOAT,
-        #     [0, 0, starts, 0]
-        # )
-        # ends_tensor_info = helper.make_tensor_value_info(
-        #     spec.in_name + '_slice_ends_' + str(i),
-        #     TensorProto.FLOAT,
-        #     [spec.batch, spec.in_channel, ends, spec.in_w]
-        # )
-        # axes_tensor_info = helper.make_tensor_value_info(
-        #     spec.in_name + '_slice_axes' + str(i),
-        #     TensorProto.FLOAT,
-        #     [0, 1, 2, 3]
-        # )
-
-        # graph.value_info.extend([
-        #     starts_tensor_info,
-        #     ends_tensor_info,
-        #     axes_tensor_info
-        # ])
-
-    # -------- Insert Conv nodes for each slice --------
-    for i in range(plan.n_o_h_seg):
-        pad_top, pad_left, pad_bottom, pad_right = spec.pads
-
+        # -------- Insert Conv nodes for each slice --------
         # Only apply original padding at boundaries
         pad_top = pad_top if i == 0 else 0
-        pad_bottom = pad_bottom if i == plan.n_o_h_seg - 1 else 0
+        pad_bottom = 0 if ends <= spec.in_h else min(pad_bottom, ends - spec.in_h)
 
         conv_node = helper.make_node(
             "Conv",
+            name=node.name+"_"+str(i),
             inputs=[spec.in_name + '_slice_' + str(i), spec.k_name, spec.b_name],
             outputs=[node.name + '_out_' + str(i)],
             kernel_shape=[spec.k_h, spec.k_w],
@@ -196,27 +209,6 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
         axis=2   # NOTE: concatenating along height
     )
     graph.node.append(concat_node)
-
-    # -------- Add tensor shape metadata --------
-    for i in range(plan.n_o_h_seg):
-        starts = max(plan.o_h * spec.strides[0] * i - (spec.k_h - 1) // 2, 0)
-        ends = min(plan.o_h * spec.strides[0] * (i + 1) + (spec.k_h - 1) // 2, spec.in_h)
-
-        # Adjust last segment output height
-        o_h_t = plan.o_h if i != plan.n_o_h_seg - 1 else spec.out_h - (i * plan.o_h)
-
-        in_tensor_info = helper.make_tensor_value_info(
-            spec.in_name + '_slice_' + str(i),
-            TensorProto.FLOAT,
-            [spec.batch, spec.in_channel, ends - starts, spec.in_w]
-        )
-        out_tensor_info = helper.make_tensor_value_info(
-            node.name + '_out_' + str(i),
-            TensorProto.FLOAT,
-            [spec.batch, spec.out_channel, o_h_t, spec.out_w]
-        )
-
-        graph.value_info.extend([in_tensor_info, out_tensor_info])
 
     # -------- Remove original Conv node --------
     remove_nodes(graph, lambda n: n == node)

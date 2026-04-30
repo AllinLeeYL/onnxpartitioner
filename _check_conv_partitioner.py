@@ -1,0 +1,94 @@
+
+import argparse
+import torch
+import torch.nn as nn
+import random
+import subprocess
+import os
+from tqdm import tqdm
+from termcolor import colored
+import warnings
+
+
+def set_seed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def parse_argument():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--num', type=int, default=20, 
+                        help='path to model2.onnx file.')
+    args = parser.parse_args()
+    return args
+
+
+class ConvOnlyNet(nn.Module):
+    def __init__(self, in_channels, num_layers):
+        super().__init__()
+        layers = []
+        c = in_channels
+
+        for i in range(num_layers):
+            out_c = random.choice([i for i in range(16, 128)])
+            k = random.choice([1, 3, 5, 7, 9, 11, 13])  # odd kernels
+
+            layers.append(nn.Conv2d(c, out_c, kernel_size=k, padding=random.choice([i for i in range(0, k-1)])))
+            # layers.append(nn.ReLU())
+
+            c = out_c
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+
+if __name__ == '__main__':
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    # -----------------------------
+    # Create output folder
+    # -----------------------------
+    os.makedirs("test", exist_ok=True)
+
+    args = parse_argument()
+    for i in tqdm(range(args.num)):
+        # parameters
+        in_channels=random.randint(1, 64)
+        img_h = random.randint(16, 512)
+        img_w = random.randint(16, 512)
+
+        # dummy input and model
+        dummy_input = torch.randn(1, in_channels, img_h, img_w)
+        model = ConvOnlyNet(in_channels=in_channels, num_layers=random.randint(1, 5))
+
+        # test model
+        model.eval()
+        out = model(dummy_input)
+        onnx_path = f"test/model_{in_channels}_in_{img_h}x{img_w}.onnx"
+        partitioned_path = f"test/model_{in_channels}_in_{img_h}x{img_w}_partitioned.onnx"
+
+        # export model
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            input_names=["input"],
+            output_names=["output"],
+            verbose=False
+        )
+
+        subprocess.run(["python3", "partitioner.py", onnx_path], stdout=subprocess.DEVNULL)
+        p = subprocess.run(["python3", "check.py", onnx_path, partitioned_path], stdout=subprocess.DEVNULL)
+        if p.returncode != 0:
+            print(colored("Conv2d partitioner consistency check failed", "red"))
+            exit(1)
+        try:
+            os.remove(onnx_path)
+            os.remove(onnx_path+".data")
+            os.remove(partitioned_path)
+        except:
+            pass
+    print(colored("Conv2d partitioner consistency check passed", "green"))
