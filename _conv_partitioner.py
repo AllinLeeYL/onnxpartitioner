@@ -126,91 +126,166 @@ def compute_partition_plan(spec: ConvSpec, hardware):
             return _PartitionPlan(o_hw=o_h, n_o_seg=n_seg, vertical=False)
 
 
+
+
 def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
-    for i in range(0, plan.n_o_seg):
-        # params
-        pad_top, pad_left, pad_bottom, pad_right = spec.pads
-        pad_start, pad_end = (pad_top, pad_bottom) if plan.vertical else (pad_left, pad_right)
-        pad_other_start, pad_other_end = (pad_left, pad_right) if plan.vertical else (pad_top, pad_bottom)
-        k = spec.k_h if plan.vertical else spec.k_w
-        in_len = spec.in_h if plan.vertical else spec.in_w
-        in_other_len = spec.in_w if plan.vertical else spec.in_h
-        stride = spec.strides[0] if plan.vertical else spec.strides[1] # TODO: check which one is vertical?
-        # -------- Insert Slice nodes (split input feature map) --------
-        slice_node = helper.make_node(
-            "Slice",
-            inputs=[
-                spec.in_name,
-                spec.in_name + '_slice_starts_' + str(i),
-                spec.in_name + '_slice_ends_' + str(i),
-                spec.in_name + '_slice_axes_' + str(i)
-            ],
-            outputs=[spec.in_name + '_slice_' + str(i)],
+    if plan.vertical:
+        for i in range(0, plan.n_o_seg):
+            pad_top, pad_left, pad_bottom, pad_right = spec.pads
+            stride = spec.strides[0]
+            # -------- Insert Slice nodes (split input feature map) --------
+            slice_node = helper.make_node(
+                "Slice",
+                inputs=[
+                    spec.in_name,
+                    spec.in_name + '_slice_starts_' + str(i),
+                    spec.in_name + '_slice_ends_' + str(i),
+                    spec.in_name + '_slice_axes_' + str(i)
+                ],
+                outputs=[spec.in_name + '_slice_' + str(i)],
+            )
+            graph.node.append(slice_node)
+
+            # Compute slice boundaries (include overlap for kernel)
+            # Note the computation order here matters
+            starts = plan.o_hw * stride * i - pad_top
+            ends = (plan.o_hw * (i + 1) - 1) * stride - pad_top + spec.k_h
+            # update paddings
+            pad_top = 0 if starts >= 0 else abs(starts)
+            pad_bottom = 0 if ends <= spec.in_h else min(pad_bottom, ends - spec.in_h)
+            # clamp the starts and ends
+            starts = max(starts, 0)
+            ends = min(ends, spec.in_h)
+
+            if ends < 0 or starts > spec.in_h:
+                raise RuntimeError("paddings are too big. kernel size=" + str(spec.k_h) + ", padding=" + str(spec.pads))
+
+            # Add tensor metadata for slice parameters
+            starts_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_starts_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[0, 0, starts, 0]
+            )
+            ends_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_ends_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[spec.batch, spec.in_channel, ends, spec.in_w]
+            )
+            axes_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_axes_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[0, 1, 2, 3]
+            )
+            graph.initializer.extend([
+                starts_tensor,
+                ends_tensor,
+                axes_tensor
+            ])
+
+            # -------- Insert Conv nodes for each slice --------
+
+            conv_node = helper.make_node(
+                "Conv",
+                name=node.name+"_"+str(i),
+                inputs=[spec.in_name + '_slice_' + str(i), spec.k_name, spec.b_name],
+                outputs=[node.name + '_out_' + str(i)],
+                kernel_shape=[spec.k_h, spec.k_w],
+                strides=spec.strides,
+                pads=[pad_top, pad_left, pad_bottom, pad_right]
+            )
+            graph.node.append(conv_node)
+
+        # -------- Concatenate outputs back together --------
+        concat_node = helper.make_node(
+            "Concat",
+            inputs=[node.name + '_out_' + str(i) for i in range(plan.n_o_seg)],
+            outputs=[spec.out_name],
+            axis=2   # NOTE: concatenating along height
         )
-        graph.node.append(slice_node)
+        graph.node.append(concat_node)
+    else:
+        for i in range(0, plan.n_o_seg):
+            # params
+            pad_top, pad_left, pad_bottom, pad_right = spec.pads
+            stride = spec.strides[1] # TODO: check which one is vertical?
+            # -------- Insert Slice nodes (split input feature map) --------
+            slice_node = helper.make_node(
+                "Slice",
+                inputs=[
+                    spec.in_name,
+                    spec.in_name + '_slice_starts_' + str(i),
+                    spec.in_name + '_slice_ends_' + str(i),
+                    spec.in_name + '_slice_axes_' + str(i)
+                ],
+                outputs=[spec.in_name + '_slice_' + str(i)],
+            )
+            graph.node.append(slice_node)
 
-        # Compute slice boundaries (include overlap for kernel)
-        # starts = plan.o_h * spec.strides[0] * i - spec.k_h//2
-        starts = plan.o_hw * stride * i - pad_start
-        starts = max(starts, 0)
-        # ends = plan.o_h * spec.strides[0] * (i + 1) + spec.k_h//2
-        ends = plan.o_hw * stride * (i + 1) - pad_start + k//2
-        ends = min(ends, in_len)
+            # Compute slice boundaries (include overlap for kernel)
+            # Note the computation order here matters
+            starts = plan.o_hw * stride * i - pad_left
+            ends = (plan.o_hw * (i + 1) - 1) * stride - pad_left + spec.k_w
+            # update paddings
+            pad_left = 0 if starts >= 0 else abs(starts)
+            pad_right = 0 if ends <= spec.in_w else min(pad_right, ends - spec.in_w)
+            # clamp the starts and ends
+            starts = max(starts, 0)
+            ends = min(ends, spec.in_w)
 
-        if ends < 0 or starts > in_len:
-            raise RuntimeError("paddings are too big. kernel size=" + str(k) + ", padding=" + str(spec.pads))
+            if ends < 0 or starts > spec.in_w:
+                raise RuntimeError("paddings are too big. kernel size=" + str(spec.k_w) + ", padding=" + str(spec.pads))
 
-        # Add tensor metadata for slice parameters
-        starts_tensor = helper.make_tensor(
-            name=spec.in_name + '_slice_starts_' + str(i),
-            data_type=TensorProto.INT32,
-            dims=[4],
-            vals=[0, 0, starts, 0] if plan.vertical else [0, 0, 0, starts]
+            # Add tensor metadata for slice parameters
+            starts_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_starts_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[0, 0, 0, starts]
+            )
+            ends_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_ends_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[spec.batch, spec.in_channel, spec.in_h, ends]
+            )
+            axes_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_axes_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[0, 1, 2, 3]
+            )
+            graph.initializer.extend([
+                starts_tensor,
+                ends_tensor,
+                axes_tensor
+            ])
+
+            # -------- Insert Conv nodes for each slice --------
+            conv_node = helper.make_node(
+                "Conv",
+                name=node.name+"_"+str(i),
+                inputs=[spec.in_name + '_slice_' + str(i), spec.k_name, spec.b_name],
+                outputs=[node.name + '_out_' + str(i)],
+                kernel_shape=[spec.k_h, spec.k_w],
+                strides=spec.strides,
+                pads=[pad_top, pad_left, pad_bottom, pad_right]
+            )
+            graph.node.append(conv_node)
+
+        # -------- Concatenate outputs back together --------
+        concat_node = helper.make_node(
+            "Concat",
+            inputs=[node.name + '_out_' + str(i) for i in range(plan.n_o_seg)],
+            outputs=[spec.out_name],
+            axis=3   # NOTE: concatenating along weight
         )
-        ends_tensor = helper.make_tensor(
-            name=spec.in_name + '_slice_ends_' + str(i),
-            data_type=TensorProto.INT32,
-            dims=[4],
-            vals=[spec.batch, spec.in_channel, ends, spec.in_w] if plan.vertical else [spec.batch, spec.in_channel, spec.in_h, ends]
-        )
-        axes_tensor = helper.make_tensor(
-            name=spec.in_name + '_slice_axes_' + str(i),
-            data_type=TensorProto.INT32,
-            dims=[4],
-            vals=[0, 1, 2, 3]
-        )
-        graph.initializer.extend([
-            starts_tensor,
-            ends_tensor,
-            axes_tensor
-        ])
-
-        # -------- Insert Conv nodes for each slice --------
-        # Only apply original padding at boundaries
-        pad_start = pad_start if i == 0 else 0
-        pad_end = 0 if ends <= in_len else min(pad_end, ends - in_len)
-
-        conv_node = helper.make_node(
-            "Conv",
-            name=node.name+"_"+str(i),
-            inputs=[spec.in_name + '_slice_' + str(i), spec.k_name, spec.b_name],
-            outputs=[node.name + '_out_' + str(i)],
-            kernel_shape=[spec.k_h, spec.k_w],
-            strides=spec.strides,
-            pads=[pad_start, pad_other_start, pad_end, pad_other_end] if plan.vertical else [pad_other_start, pad_start, pad_other_end, pad_end]
-        )
-        graph.node.append(conv_node)
-
-    # -------- Concatenate outputs back together --------
-    concat_node = helper.make_node(
-        "Concat",
-        inputs=[node.name + '_out_' + str(i) for i in range(plan.n_o_seg)],
-        outputs=[spec.out_name],
-        axis=2 if plan.vertical else 3   # NOTE: concatenating along height/weight
-    )
-    graph.node.append(concat_node)
+        graph.node.append(concat_node)
 
     # -------- Remove original Conv node --------
     remove_nodes(graph, lambda n: n == node)
     return graph
+    
 
