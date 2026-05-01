@@ -38,7 +38,7 @@ class ConvOnlyNet(nn.Module):
         for i in range(num_layers):
             out_c = random.choice([i for i in range(16, 128)])
 
-            layers.append(nn.Conv2d(c, out_c, kernel_size=k, padding=random.choice([i for i in range(0, k)])))
+            layers.append(nn.Conv2d(c, out_c, kernel_size=k, padding=random.choice([i for i in range(0, max(k))])))
             # layers.append(nn.ReLU())
 
             c = out_c
@@ -64,13 +64,14 @@ if __name__ == '__main__':
         in_channels=random.randint(1, 64)
         img_h = random.randint(16, 512)
         img_w = random.randint(16, 512)
-        k = random.choice([1, 3, 5, 7, 9, 11, 13])
+        k_h = random.choice([1, 3, 5, 7, 9, 11, 13])
+        k_w = random.choice([1, 3, 5, 7, 9, 11, 13])
 
         # dummy input and model
         dummy_input = torch.randn(1, in_channels, img_h, img_w).to(device)
         model = ConvOnlyNet(in_channels=in_channels, 
                             num_layers=random.randint(1, 1),
-                            k=k ).to(device)
+                            k=(k_h, k_w) ).to(device)
 
         # test model
         model.eval()
