@@ -14,14 +14,16 @@ def parse_argument():
     parser = argparse.ArgumentParser(description='ONNX model partitioner')
     parser.add_argument('model', type=str,  
                         help='path to model.pt file.')
-    parser.add_argument('--in_buffer_channel', type=int,
+    parser.add_argument('--in_channel', type=int, default=256,
                         help='input buffer channel size')
-    parser.add_argument('--in_buffer_pixel', type=int,
+    parser.add_argument('--in_pixel', type=int, default=1024*1024,
                         help='input buffer pixel size')
-    parser.add_argument('--out_buffer_channel', type=int,
+    parser.add_argument('--out_channel', type=int, default=256,
                         help='output buffer channel size')
-    parser.add_argument('--out_buffer_pixel', type=int,
+    parser.add_argument('--out_pixel', type=int, default=4096,
                         help='output buffer pixel size')
+    parser.add_argument('--direction', choices=['auto', 'vertical', 'horizontal'], default='auto',
+                        help='partition direction of 2d array')
     args = parser.parse_args()
     return args
 
@@ -60,8 +62,9 @@ def Reshape_node_params(graph, node):
 
 
 class Partitioner:
-    def __init__(self, hardware):
+    def __init__(self, hardware, direction):
         self.hardware = hardware
+        self.direction = direction
         self._graph = None # graph to be partitioned
         pass
 
@@ -96,7 +99,7 @@ class Partitioner:
 
     def _split(self, node):
         if node.op_type == 'Conv':
-            self._graph = partition_conv(self._graph, node, self.hardware)
+            self._graph = partition_conv(self._graph, node, self.hardware, self.direction)
 
 
 # input: model + hardware parameters
@@ -108,14 +111,18 @@ if __name__ == '__main__':
         print("model file not ended with \".onnx\" may raise errors.")
     model = onnx.load(args.model)
     onnx.checker.check_model(model)
-    # model = shape_inference.infer_shapes(model)
-    
-    hardware = {'input_buffer': Buffer(256, 8192),
-                'output_buffer': Buffer(256, 4096)}
 
-    partitioner = Partitioner(hardware)
+    
+    hardware = {'input_buffer': Buffer(args.in_channel, args.in_pixel),
+                'output_buffer': Buffer(args.out_channel, args.out_pixel)}
+
+
+    # ------------ Partition -------------
+    partitioner = Partitioner(hardware, direction=args.direction)
     partitioned_model = partitioner.partition(model)
-    # model = helper.make_model(partitioned_graph)
+    
+
+    # ------------ Save model ------------
     converted_model = version_converter.convert_version(partitioned_model, 25)
     onnx.save(converted_model, args.model[:-5]+"_partitioned.onnx")
 

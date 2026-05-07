@@ -17,12 +17,12 @@ def conv_exceed_hardware_limit(graph, node, hardware):
     return False
 
 
-def partition_conv(graph, node, hardware):
+def partition_conv(graph, node, hardware, direction: str):
     # Step 1: extract
     spec = conv_params(graph, node)
 
     # Step 2: compute plan
-    plan = compute_partition_plan(spec, hardware)
+    plan = compute_partition_plan(spec, hardware, direction)
 
     # Step 3: apply transformation
     graph = apply_conv_partition(graph, node, spec, plan)
@@ -34,9 +34,13 @@ def partition_conv(graph, node, hardware):
 
 @dataclass
 class _PartitionPlan:
-    n_o_seg: int # number of output height/weight segment
-    o_hw: int # size of output height/weight segment
-    vertical: bool # True: segment by height / False: by weight
+    n_in_channel: int = 0 # number of input channel segment
+    in_channel_s: int = 0 # partitioned channel size
+    n_out_channel: int = 0 # number of output channel segment
+    out_channel_s: int = 0 # partitioned channel size
+    n_o_seg: int = 0 # number of output height/weight segment
+    o_hw: int = 0 # size of output height/weight segment
+    vertical: bool = True# True: segment by height / False: by weight
 
 
 def conv_params(graph, node):
@@ -76,12 +80,18 @@ def calculate_conv_buf(graph, node):
             'output_buffer': Buffer(spec.in_channel, spec.out_h * spec.out_w)}
 
 
-def compute_partition_plan(spec: ConvSpec, hardware):
-    if spec.out_channel > hardware['output_buffer'].channel_s or \
-        spec.in_channel > hardware['input_buffer'].channel_s:
-        pass
+def compute_partition_plan(spec: ConvSpec, hardware, direction):
+    if spec.out_channel > hardware['output_buffer'].channel_s:
+        q, r = divmod(spec.out_channel, hardware['output_buffer'].channel_s)
+        n_seg = q if r == 0 else q + 1
+        return _PartitionPlan(n_out_channel=n_seg, out_channel_s=hardware['output_buffer'].channel_s)
+    elif spec.in_channel > hardware['input_buffer'].channel_s:
+        q, r = divmod(spec.in_channel, hardware['input_buffer'].channel_s)
+        n_seg = q if r == 0 else q + 1
+        return _PartitionPlan(n_in_channel=n_seg, in_channel_s=hardware['input_buffer'].channel_s)
     else:
-        if spec.in_h > spec.in_w:
+        is_vertical = True if direction=='vertical' else False if direction=='horizontal' else spec.in_h > spec.in_w
+        if is_vertical:
             in_len = spec.in_w
             out_len = spec.out_w
             out_row = spec.out_h
@@ -120,16 +130,106 @@ def compute_partition_plan(spec: ConvSpec, hardware):
         # Number of segments needed to cover full output
         q, r = divmod(out_row, o_h)
         n_seg = q if r == 0 else q + 1
-        if spec.in_h > spec.in_w:
-            return _PartitionPlan(o_hw=o_h, n_o_seg=n_seg, vertical=True)
-        else:
-            return _PartitionPlan(o_hw=o_h, n_o_seg=n_seg, vertical=False)
-
-
+        
+        return _PartitionPlan(n_in_channel=0, in_channel_s=0,
+                              n_out_channel=0, out_channel_s=0,
+                              o_hw=o_h, n_o_seg=n_seg, vertical=is_vertical)
 
 
 def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
-    if plan.vertical:
+    init_map = {
+        init.name: numpy_helper.to_array(init)
+        for init in graph.initializer
+    }
+    # -------------- input channel partition --------------
+    if plan.n_in_channel!=0:
+        for i in range(0, plan.n_in_channel):
+            channel_s = plan.in_channel_s if i != plan.n_in_channel-1 else spec.in_channel - i*plan.in_channel_s
+
+            # -------- Insert Slice nodes (split input feature map) --------
+            slice_node = helper.make_node(
+                "Slice",
+                inputs=[
+                    spec.in_name,
+                    spec.in_name + '_slice_starts_' + str(i),
+                    spec.in_name + '_slice_ends_' + str(i),
+                    spec.in_name + '_slice_axes_' + str(i)
+                ],
+                outputs=[spec.in_name + '_slice_' + str(i)],
+            )
+            graph.node.append(slice_node)
+
+            # Add slice parameters
+            starts_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_starts_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[0, 0, 0, 0]
+            )
+            ends_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_ends_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[spec.batch, channel_s, spec.in_h, spec.in_w]
+            )
+            axes_tensor = helper.make_tensor(
+                name=spec.in_name + '_slice_axes_' + str(i),
+                data_type=TensorProto.INT32,
+                dims=[4],
+                vals=[0, 1, 2, 3]
+            )
+            graph.initializer.extend([
+                starts_tensor,
+                ends_tensor,
+                axes_tensor
+            ])
+
+            # -------- Insert Conv nodes for each slice --------
+            conv_node = helper.make_node(
+                "Conv",
+                name=node.name+"_"+str(i),
+                inputs=[spec.in_name + '_slice_' + str(i), 
+                        spec.k_name + '_slice_' + str(i), 
+                        spec.b_name],
+                outputs=[node.name + '_out_' + str(i)],
+                kernel_shape=[spec.k_h, spec.k_w],
+                strides=spec.strides,
+                pads=spec.pads
+            )
+            graph.node.append(conv_node)
+
+            # -------- Insert Conv kernels --------
+            kernel = init_map[spec.k_name]
+            # print(kernel.shape)
+            starts = i*plan.in_channel_s
+            ends = min(spec.in_channel, (i+1)*plan.in_channel_s)
+            kernel_tensor = helper.make_tensor(
+                name=spec.k_name + '_slice_' + str(i),
+                data_type=TensorProto.FLOAT,
+                dims=[spec.out_channel, ends-starts, spec.k_h, spec.k_w],
+                vals=kernel[:, starts:ends, :, :]
+            )
+            print(kernel_tensor.dims, kernel_tensor.name)
+            graph.initializer.extend([
+                kernel_tensor
+            ])
+            
+
+        # -------- Concatenate outputs back together --------
+        concat_node = helper.make_node(
+            "Concat",
+            inputs=[node.name + '_out_' + str(i) for i in range(plan.n_in_channel)],
+            outputs=[spec.out_name],
+            axis=1   # NOTE: concatenating along channel
+        )
+        graph.node.append(concat_node)
+
+    # -------------- output channel partition --------------
+    elif plan.n_out_channel!=0:
+        pass
+
+    # -------------- height channel partition --------------
+    elif plan.vertical:
         for i in range(0, plan.n_o_seg):
             pad_top, pad_left, pad_bottom, pad_right = spec.pads
             stride = spec.strides[0]
@@ -186,7 +286,6 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             ])
 
             # -------- Insert Conv nodes for each slice --------
-
             conv_node = helper.make_node(
                 "Conv",
                 name=node.name+"_"+str(i),
@@ -206,6 +305,8 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             axis=2   # NOTE: concatenating along height
         )
         graph.node.append(concat_node)
+
+    # -------------- weight channel partition --------------
     else:
         for i in range(0, plan.n_o_seg):
             # params
