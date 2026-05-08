@@ -73,10 +73,9 @@ class Partitioner:
         self._model = model
         self._graph = model.graph
         while self._partition_run():
-            model = helper.make_model(self._graph)
-            self._model = shape_inference.infer_shapes(model)
+            self._model = helper.make_model(self._graph)
+            self._model = shape_inference.infer_shapes(self._model)
             self._graph = self._model.graph
-            pass
         return self._model
 
 

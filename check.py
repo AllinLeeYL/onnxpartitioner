@@ -17,7 +17,7 @@ def parse_argument():
                         help='path to model2.onnx file.')
     parser.add_argument('--use_cuda', action='store_true',
                         help="Enable CUDA execution")
-    parser.add_argument('--num', type=int, default=20, 
+    parser.add_argument('--num', type=int, default=5, 
                         help='number of tests.')
     parser.add_argument('--rtol', type=float, default=1e-2, 
                         help='The relative tolerance parameter.')
@@ -39,6 +39,7 @@ def tensor_shape(tensor):
 
 
 def get_session(path, cuda=True):
+    # TensorrtExecutionProvider
     providers = ["CUDAExecutionProvider"] if cuda else []
     providers += ["CPUExecutionProvider"]
     sess = ort.InferenceSession(path, 

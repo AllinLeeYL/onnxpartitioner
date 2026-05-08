@@ -43,6 +43,9 @@ def get_value_info(graph):
         v.name: [d.dim_value for d in v.type.tensor_type.shape.dim]
         for v in values
     }
+    for init in graph.initializer:
+        if init.name not in value_info:
+            value_info[init.name]=list(init.dims)
     return value_info
 
 
