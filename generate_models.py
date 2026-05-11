@@ -17,6 +17,7 @@ os.makedirs("test", exist_ok=True)
 dummy_img = torch.randn(1, 1, 28, 28)
 dummy_flat = torch.randn(1, 28 * 28)
 dummy_img_24 = torch.randn(1, 24, 256, 256)
+dummy_img_3_256 = torch.randn(1, 3, 256, 256)
 
 
 # -----------------------------
@@ -114,6 +115,34 @@ class TinyCNNNet(nn.Module):
         return x
 
 
+class DummyNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.block1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
+            # nn.BatchNorm2d(32),
+            # nn.ReLU()
+        )
+
+        self.block2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            # nn.BatchNorm2d(64),
+            # nn.ReLU()
+        )
+
+        self.block3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            # nn.BatchNorm2d(128),
+            # nn.ReLU()
+        )
+
+    def forward(self, x):
+        x = self.block1(x)  # (32, 128, 128)
+        x = self.block2(x)  # (64, 64, 64)
+        x = self.block3(x)  # (128, 32, 32)
+        return x
+
 # -----------------------------
 # Instantiate models
 # -----------------------------
@@ -123,7 +152,8 @@ models = {
     "model3": (MLP(), dummy_flat),
     "model4": (CNN_MLP(), dummy_img),
     "model5": (TinyNet(), dummy_flat),
-    "model6": (TinyCNNNet(), dummy_img_24)
+    "model6": (TinyCNNNet(), dummy_img_24),
+    "model7": (DummyNet(), dummy_img_3_256)
 }
 
 # -----------------------------

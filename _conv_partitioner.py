@@ -116,7 +116,7 @@ def compute_partition_plan(spec: ConvSpec, hardware, direction):
         # Compute max output tile height/weight that fits in output buffer
         o_h = max_multiplier_within_limit(
             base=out_len,
-            limit=hardware['output_buffer'].pixel_s - out_len * (k - 1)
+            limit=hardware['output_buffer'].pixel_s# - out_len * (k - 1)
         )
 
         # Final tile height/weight constrained by both input and output limits
@@ -194,7 +194,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             zero_bias_name = spec.b_name + '_zero'
             conv_node = helper.make_node(
                 'Conv',
-                name=node.name+'_'+str(i),
+                name=node.name+'_sub'+str(i),
                 inputs=[sliced_input_name, 
                         spec.k_name + '_slice_' + str(i), 
                         spec.b_name if i == 0 else zero_bias_name],
@@ -262,7 +262,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             # ------ Conv node -----
             conv_node = helper.make_node(
                 'Conv',
-                name=node.name + '_' + str(i),
+                name=node.name + '_sub' + str(i),
                 inputs=[spec.in_name,
                         spec.k_name + '_slice_' + str(i),
                         spec.b_name + '_slice_' + str(i)],
@@ -382,7 +382,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             # -------- Insert Conv nodes for each slice --------
             conv_node = helper.make_node(
                 "Conv",
-                name=node.name+"_"+str(i),
+                name=node.name+"_sub"+str(i),
                 inputs=[sliced_input_name, spec.k_name, spec.b_name],
                 outputs=[node.name + '_out_' + str(i)],
                 kernel_shape=[spec.k_h, spec.k_w],
@@ -469,7 +469,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
             # -------- Insert Conv nodes for each slice --------
             conv_node = helper.make_node(
                 "Conv",
-                name=node.name+"_"+str(i),
+                name=node.name+"_sub"+str(i),
                 inputs=[sliced_input_name, spec.k_name, spec.b_name],
                 outputs=[node.name + '_out_' + str(i)],
                 kernel_shape=[spec.k_h, spec.k_w],
