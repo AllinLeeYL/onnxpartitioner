@@ -10,3 +10,5 @@ venv
 **.onnx
 **.data
 **.swp
+
+onnxpartitioner.egg-info/*
