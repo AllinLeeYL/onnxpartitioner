@@ -90,7 +90,7 @@ class Partitioner:
 
     def _exceed_hardware_limit(self, node):
         if node.op_type == 'Conv':
-            return conv_exceed_hardware_limit(self._graph, node, hardware)
+            return conv_exceed_hardware_limit(self._graph, node, self.hardware)
             
         return False
 
