@@ -2,5 +2,11 @@
 name = "onnxpartitioner"
 version = "0.1.0"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
-include = ["partitioner", "common"]
+where = ["src"]
+
+[project.scripts]
+onnxpartitioner = "onnxpartitioner.partitioner:main"

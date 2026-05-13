@@ -1,13 +1,12 @@
 import torch
 import onnx
 from onnx import shape_inference, numpy_helper, helper, version_converter
-# import onnxruntime as ort
 import argparse
 import numpy as np
 # import onnx_graphsurgeon as gs
 
-from common import Buffer
-from _conv_partitioner import conv_exceed_hardware_limit, partition_conv
+from .common import Buffer
+from ._conv_partitioner import conv_exceed_hardware_limit, partition_conv
 
 
 def parse_argument():
@@ -100,10 +99,9 @@ class Partitioner:
         if node.op_type == 'Conv':
             self._graph = partition_conv(self._graph, node, self.hardware, self.direction)
 
-
 # input: model + hardware parameters
 # output: mapping
-if __name__ == '__main__':
+def main():
     args = parse_argument()
 
     if (args.model[-5:] != '.onnx'):
@@ -129,3 +127,7 @@ if __name__ == '__main__':
     print("IR version:", model.ir_version)
     # print(model.graph.initializer)
     # print("Producer:", model.producer_name)
+
+
+if __name__ == "__main__":
+    main()

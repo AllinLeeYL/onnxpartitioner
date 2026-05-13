@@ -3,9 +3,10 @@ import onnx
 from onnx import shape_inference, numpy_helper, helper, TensorProto
 # import onnxruntime as ort
 import numpy as np
-
-from common import *
 from dataclasses import dataclass
+
+from .common import *
+
 
 
 def conv_exceed_hardware_limit(graph, node, hardware):
