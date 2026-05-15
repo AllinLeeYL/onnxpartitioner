@@ -77,8 +77,7 @@ def build_process_params(args):
         partitioned_path = f"test/model_{in_channels}_in_{img_h}x{img_w}_partitioned.onnx"
         
         # partition
-        partition_cmds = ["python3", 
-                "partitioner.py", 
+        partition_cmds = ["onnxpartitioner", 
                 onnx_path, 
                 "--in_channel", str(in_channel_limit),
                 "--in_pixel", str(in_pixel_limit),
@@ -170,8 +169,7 @@ def single_process_main(args):
         )
         
         # partition
-        partition_cmds = ["python3", 
-                "partitioner.py", 
+        partition_cmds = ["onnxpartitioner", 
                 onnx_path, 
                 "--in_channel", str(in_channel_limit),
                 "--in_pixel", str(in_pixel_limit),

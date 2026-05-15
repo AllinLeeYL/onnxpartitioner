@@ -6,7 +6,7 @@ import numpy as np
 # import onnx_graphsurgeon as gs
 
 from .common import Buffer
-from ._conv_partitioner import conv_exceed_hardware_limit, partition_conv
+from ._conv_partitioner import try_partition_conv
 
 
 def parse_argument():
@@ -65,6 +65,9 @@ class Partitioner:
         self.hardware = hardware
         self.direction = direction
         self._graph = None # graph to be partitioned
+
+        # partition plan functions
+        self.conv_partition_plan_func = None
         pass
 
 
@@ -81,23 +84,24 @@ class Partitioner:
     def _partition_run(self):
         partitioned = False
         for node in self._graph.node:
-            if self._exceed_hardware_limit(node):
-                self._split(node)
+            if self._partition_node(node):
                 partitioned = True
                 break
         return partitioned
 
 
-    def _exceed_hardware_limit(self, node):
-        if node.op_type == 'Conv':
-            return conv_exceed_hardware_limit(self._graph, node, self.hardware)
+    # def _exceed_hardware_limit(self, node):
+    #     if node.op_type == 'Conv':
+    #         return conv_exceed_hardware_limit(self._graph, node, self.hardware)
             
-        return False
+    #     return False
 
 
-    def _split(self, node):
+    def _partition_node(self, node):
+        is_partitioned = False
         if node.op_type == 'Conv':
-            self._graph = partition_conv(self._graph, node, self.hardware, self.direction)
+            is_partitioned = try_partition_conv(self._graph, node, self.hardware, self.direction, self.conv_partition_plan_func)
+        return is_partitioned
 
 # input: model + hardware parameters
 # output: mapping

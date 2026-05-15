@@ -9,31 +9,34 @@ from .common import *
 
 
 
-def conv_exceed_hardware_limit(graph, node, hardware):
-    buffers = calculate_conv_buf(graph, node)
-    for buf_name, buf, in buffers.items():
-        if buf > hardware[buf_name]:
-            return True
+# def conv_exceed_hardware_limit(graph, node, hardware):
+#     buffers = calculate_conv_buf(graph, node)
+#     for buf_name, buf, in buffers.items():
+#         if buf > hardware[buf_name]:
+#             return True
     
-    return False
+#     return False
 
 
-def partition_conv(graph, node, hardware, direction: str):
+def try_partition_conv(graph, node, hardware, direction: str, plan_func=None):
+    partition_plan = plan_func if plan_func != None else compute_partition_plan
     # Step 1: extract
     spec = conv_params(graph, node)
 
     # Step 2: compute plan
-    plan = compute_partition_plan(spec, hardware, direction)
+    plan = partition_plan(spec, hardware, direction)
+    if plan == None:
+        return False
     print("Partition plan:", plan, "applied to", node.name)
 
     # Step 3: apply transformation
     graph = apply_conv_partition(graph, node, spec, plan)
 
-    return graph
+    return True
 
 
 @dataclass
-class _PartitionPlan:
+class ConvPartitionPlan:
     n_in_channel: int = 0 # number of input channel segment
     in_channel_s: int = 0 # partitioned channel size
     n_out_channel: int = 0 # number of output channel segment
@@ -73,22 +76,32 @@ def conv_params(graph, node):
     )
 
 
-def calculate_conv_buf(graph, node):
-    spec = conv_params(graph, node)
+# def calculate_conv_buf(graph, node):
+#     spec = conv_params(graph, node)
 
-    return {'input_buffer': Buffer(spec.in_channel, spec.in_h * spec.in_w),
-            'output_buffer': Buffer(spec.out_channel, spec.out_h * spec.out_w)}
+#     return {'input_buffer': Buffer(spec.in_channel, spec.in_h * spec.in_w),
+#             'output_buffer': Buffer(spec.out_channel, spec.out_h * spec.out_w)}
 
 
 def compute_partition_plan(spec: ConvSpec, hardware, direction):
+    buffers = {'input_buffer': Buffer(spec.in_channel, spec.in_h * spec.in_w),
+               'output_buffer': Buffer(spec.out_channel, spec.out_h * spec.out_w)}
+    do_partition = False
+    for buf_name, buf, in buffers.items():
+        if buf > hardware[buf_name]:
+            do_partition = True
+            break
+    if not do_partition:
+        return None
+    
     if spec.out_channel > hardware['output_buffer'].channel_s:
         q, r = divmod(spec.out_channel, hardware['output_buffer'].channel_s)
         n_seg = q if r == 0 else q + 1
-        return _PartitionPlan(n_out_channel=n_seg, out_channel_s=hardware['output_buffer'].channel_s)
+        return ConvPartitionPlan(n_out_channel=n_seg, out_channel_s=hardware['output_buffer'].channel_s)
     elif spec.in_channel > hardware['input_buffer'].channel_s:
         q, r = divmod(spec.in_channel, hardware['input_buffer'].channel_s)
         n_seg = q if r == 0 else q + 1
-        return _PartitionPlan(n_in_channel=n_seg, in_channel_s=hardware['input_buffer'].channel_s)
+        return ConvPartitionPlan(n_in_channel=n_seg, in_channel_s=hardware['input_buffer'].channel_s)
     else:
         is_vertical = True if direction=='vertical' else False if direction=='horizontal' else spec.in_h >= spec.in_w
         if is_vertical:
@@ -131,12 +144,12 @@ def compute_partition_plan(spec: ConvSpec, hardware, direction):
         q, r = divmod(out_row, o_h)
         n_seg = q if r == 0 else q + 1
         
-        return _PartitionPlan(n_in_channel=0, in_channel_s=0,
+        return ConvPartitionPlan(n_in_channel=0, in_channel_s=0,
                               n_out_channel=0, out_channel_s=0,
                               o_hw=o_h, n_o_seg=n_seg, vertical=is_vertical)
 
 
-def apply_conv_partition(graph, node, spec: ConvSpec, plan: _PartitionPlan):
+def apply_conv_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
     init_map = {
         init.name: numpy_helper.to_array(init)
         for init in graph.initializer
