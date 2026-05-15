@@ -1,11 +1,12 @@
 import torch
 import onnx
-from onnx import shape_inference, numpy_helper, helper, TensorProto
+from onnx import shape_inference, numpy_helper, helper, TensorProto, GraphProto, NodeProto
 # import onnxruntime as ort
 import numpy as np
 from dataclasses import dataclass
 
 from .common import *
+from .modelproto_utils import get_successor
 
 
 
@@ -48,7 +49,7 @@ class ConvPartitionPlan:
     sum_node: bool = True # whether to add add node after
 
 
-def conv_params(graph, node):
+def conv_params(graph: GraphProto, node):
     in_name = node.input[0]
     out_name = node.output[0]
     kernel_name = node.input[1]
@@ -151,7 +152,7 @@ def compute_partition_plan(spec: ConvSpec, hardware, direction):
                               o_hw=o_h, n_o_seg=n_seg, vertical=is_vertical)
 
 
-def apply_conv_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
+def apply_conv_partition(graph: GraphProto, node: NodeProto, spec: ConvSpec, plan: ConvPartitionPlan):
     if plan.n_in_channel!=0:
         input_channel_partition(graph, node, spec, plan)
     elif plan.n_out_channel!=0:
@@ -165,7 +166,7 @@ def apply_conv_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
     return graph
 
 
-def input_channel_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
+def input_channel_partition(graph: GraphProto, node: NodeProto, spec: ConvSpec, plan: ConvPartitionPlan):
     """
     input channel partition
     """
@@ -182,6 +183,7 @@ def input_channel_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan
         sliced_input_starts_name = spec.in_name + '_slice_starts_' + str(i) + '_for_' + node.name
         sliced_input_ends_name = spec.in_name + '_slice_ends_' + str(i) + '_for_' + node.name
         sliced_input_axes_name = spec.in_name + '_slice_axes_' + str(i) + '_for_' + node.name
+
         slice_node = helper.make_node(
             "Slice",
             inputs=[
@@ -330,17 +332,16 @@ def output_channel_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPla
         )
         graph.value_info.extend([kernel_info, bias_info])
 
-    if plan.concat_node:
-        concat_node = helper.make_node(
-            'Concat',
-            inputs=[node.name + '_out_' + str(i) for i in range(plan.n_out_channel)],
-            outputs=[spec.out_name],
-            axis=1
-        )
-        graph.node.append(concat_node)
-        remove_names = {spec.k_name, spec.b_name}
-    else:
-        remove_names = {spec.k_name, spec.b_name, spec.out_name}
+    concat_node = helper.make_node(
+        'Concat',
+        inputs=[node.name + '_out_' + str(i) for i in range(plan.n_out_channel)],
+        outputs=[spec.out_name],
+        axis=1
+    )
+    graph.node.append(concat_node)
+    remove_names = {spec.k_name, spec.b_name}
+    if not plan.concat_node:
+        eliminate_concat_node(graph, concat_node)
 
     # -------- Remove unused Conv parameters --------
     keep = [
@@ -351,7 +352,7 @@ def output_channel_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPla
     graph.initializer.extend(keep)
 
 
-def height_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
+def height_partition(graph: GraphProto, node: NodeProto, spec: ConvSpec, plan: ConvPartitionPlan):
     init_map = {
         init.name: numpy_helper.to_array(init)
         for init in graph.initializer
@@ -439,7 +440,7 @@ def height_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
     graph.node.append(concat_node)
 
 
-def width_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
+def width_partition(graph: GraphProto, node: NodeProto, spec: ConvSpec, plan: ConvPartitionPlan):
     init_map = {
         init.name: numpy_helper.to_array(init)
         for init in graph.initializer
@@ -528,3 +529,12 @@ def width_partition(graph, node, spec: ConvSpec, plan: ConvPartitionPlan):
     graph.node.append(concat_node)
     
 
+def eliminate_concat_node(graph: GraphProto, node: NodeProto):
+    # 1. count input numbers
+    print(node.input)
+    # 2. partition next layer
+    successors = get_successor(graph, node)
+    for s in successors:
+        pass
+    # 3. glue 
+    pass

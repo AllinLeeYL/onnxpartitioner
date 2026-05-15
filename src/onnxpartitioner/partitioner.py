@@ -1,6 +1,6 @@
 import torch
 import onnx
-from onnx import shape_inference, numpy_helper, helper, version_converter
+from onnx import shape_inference, numpy_helper, helper, version_converter, ModelProto
 import argparse
 import numpy as np
 # import onnx_graphsurgeon as gs
@@ -71,7 +71,7 @@ class Partitioner:
         pass
 
 
-    def partition(self, model):
+    def partition(self, model: ModelProto):
         self._model = model
         self._graph = model.graph
         while self._partition_run():
