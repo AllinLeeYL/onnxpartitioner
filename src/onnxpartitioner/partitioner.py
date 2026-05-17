@@ -3,7 +3,7 @@ import onnx
 from onnx import shape_inference, numpy_helper, helper, version_converter, ModelProto
 import argparse
 import numpy as np
-# import onnx_graphsurgeon as gs
+import onnx_graphsurgeon as gs
 
 from .common import Buffer
 from ._conv_partitioner import try_partition_conv
@@ -61,40 +61,69 @@ def Reshape_node_params(graph, node):
 
 
 class Partitioner:
-    def __init__(self, hardware, direction):
-        self.hardware = hardware
-        self.direction = direction
-        self._graph = None # graph to be partitioned
+    def __init__(self, hardware, **kwargs):
+        """
+        Initialize the graph partitioner.
 
-        # partition plan functions
-        self.conv_partition_plan_func = None
+        Parameters
+        ----------
+        hardware : dict
+            Hardware constraints, capabilities, or resource budget
+            used to guide graph partitioning.
+
+        **kwargs : dict
+        Optional configuration parameters.
+
+            Supported keys:
+            - conv_partition_plan_func : callable
+                Function used to generate Conv partition plans.
+            - direction : str
+                Partition traversal direction (e.g. auto, vertical, horizontal).
+
+        """
+        self.hardware = hardware
+        self.kwargs = kwargs
+
+        # Optional partition direction
+        self.direction = kwargs.get(
+            "direction",
+            "auto"
+        )
+        # Optional partition planning function for Conv operators
+        self.conv_partition_plan_func = kwargs.get(
+            "conv_partition_plan_func",
+            None
+        )
         pass
 
 
     def partition(self, model: ModelProto):
-        self._model = model
-        self._graph = model.graph
+        """
+        Initialize the graph partitioner.
+
+        Parameters
+        ----------
+        model : ModelProto
+            model to be partitioned
+
+        Attributes
+        ----------
+        _graph : Graph | None
+            graph format used in onnx_graphsurgeon.
+        """
+        self._graph: gs.Graph = gs.import_onnx(model)
         while self._partition_run():
-            self._model = helper.make_model(self._graph)
-            self._model = shape_inference.infer_shapes(self._model)
-            self._graph = self._model.graph
+            pass
         return self._model
 
 
     def _partition_run(self):
         partitioned = False
-        for node in self._graph.node:
+        for node in self._graph.nodes:
             if self._partition_node(node):
                 partitioned = True
                 break
         return partitioned
-
-
-    # def _exceed_hardware_limit(self, node):
-    #     if node.op_type == 'Conv':
-    #         return conv_exceed_hardware_limit(self._graph, node, self.hardware)
-            
-    #     return False
 
 
     def _partition_node(self, node):
@@ -129,8 +158,6 @@ def main():
 
     # Model metadata
     print("IR version:", model.ir_version)
-    # print(model.graph.initializer)
-    # print("Producer:", model.producer_name)
 
 
 if __name__ == "__main__":
