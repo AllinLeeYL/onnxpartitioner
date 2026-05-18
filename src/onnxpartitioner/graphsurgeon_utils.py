@@ -14,3 +14,7 @@ def get_successors(node: gs.Node) -> list[gs.Node]:
         for child_node in out_tensor.outputs:
             successors.append(child_node)
     return successors
+
+@gs.Graph.register()
+def add_node(self, op, inputs, outputs, **kwargs):
+    return self.layer(op=op, inputs=inputs, outputs=outputs, **kwargs)

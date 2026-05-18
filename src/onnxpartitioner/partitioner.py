@@ -97,7 +97,7 @@ class Partitioner:
         pass
 
 
-    def partition(self, model: ModelProto):
+    def partition(self, model: ModelProto) -> ModelProto:
         """
         Initialize the graph partitioner.
 
@@ -114,7 +114,7 @@ class Partitioner:
         self._graph: gs.Graph = gs.import_onnx(model)
         while self._partition_run():
             pass
-        return self._model
+        return gs.export_onnx(self._graph)
 
 
     def _partition_run(self):
@@ -126,9 +126,9 @@ class Partitioner:
         return partitioned
 
 
-    def _partition_node(self, node):
+    def _partition_node(self, node: gs.Graph):
         is_partitioned = False
-        if node.op_type == 'Conv':
+        if node.op == 'Conv':
             is_partitioned = try_partition_conv(self._graph, node, self.hardware, self.direction, self.conv_partition_plan_func)
         return is_partitioned
 
