@@ -6,33 +6,33 @@ from .common import *
 from .graphsurgeon_utils import add_node, get_parents, get_parent_from_tensor, get_successors, remove_node
 
 
-def try_partition_conv(graph: gs.Graph, node: gs.Node, hardware: dict, direction: str, plan_func=None):
-    partition_plan = plan_func if plan_func != None else default_partition_plan
-    # Step 1: extract parameters
-    spec = conv_params(graph, node)
+# def try_partition_conv(graph: gs.Graph, node: gs.Node, hardware: dict, direction: str, plan_func=None):
+#     partition_plan = plan_func if plan_func != None else default_partition_plan
+#     # Step 1: extract parameters
+#     spec = conv_params(graph, node)
 
-    # Step 2: compute plan
-    plan = partition_plan(spec, hardware, direction)
-    if plan == None:
-        return False
-    print("Partition plan:", plan, "applied to", node.name)
+#     # Step 2: compute plan
+#     plan = partition_plan(spec, hardware, direction)
+#     if plan == None:
+#         return False
+#     print("Partition plan:", plan, "applied to", node.name)
 
-    # Step 3: apply transformation
-    last_node = apply_conv_partition(graph, node, spec, plan)
-    if not plan.concat_node:
-        if plan.n_out_channel != 0:
-            new_plan = ConvPartitionPlan(n_in_channel=plan.n_out_channel, in_channel_s=plan.out_channel_s, do_slice=False)
-            for sub_node in get_successors(last_node):
-                print("Partition plan:", plan, "applied to", node.name)
-                apply_conv_partition(graph, sub_node, spec, new_plan)
-        elif plan.vertical:
-            pass
-        else:
-            pass
-    elif not plan.sum_node:
-        pass
+#     # Step 3: apply transformation
+#     last_node = apply_conv_partition(graph, node, spec, plan)
+#     if not plan.concat_node:
+#         if plan.n_out_channel != 0:
+#             new_plan = ConvPartitionPlan(n_in_channel=plan.n_out_channel, in_channel_s=plan.out_channel_s, do_slice=False)
+#             for sub_node in get_successors(last_node):
+#                 print("Partition plan:", plan, "applied to", node.name)
+#                 apply_conv_partition(graph, sub_node, spec, new_plan)
+#         elif plan.vertical:
+#             pass
+#         else:
+#             pass
+#     elif not plan.sum_node:
+#         pass
 
-    return True
+#     return True
 
 
 @dataclass
@@ -215,7 +215,7 @@ def input_channel_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan
         inputs = [
             sliced_tensor,
             sliced_kernel,
-            bias if i==0 else zero_bias
+            bias if i==plan.n_in_channel-1 else zero_bias
         ]
         sub_op_out = gs.Variable(
             name=node.name + '_out_' + str(i),

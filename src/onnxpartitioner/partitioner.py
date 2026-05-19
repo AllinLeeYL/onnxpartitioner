@@ -147,22 +147,23 @@ class Partitioner:
 
         # Step 3: apply transformation
         last_node = apply_conv_partition(self._graph, node, spec, plan)
-        if not plan.concat_node:
-            if plan.n_out_channel != 0:
-                new_plan = ConvPartitionPlan(n_in_channel=plan.n_out_channel, in_channel_s=plan.out_channel_s, do_slice=False)
-                for sub_node in get_successors(last_node):
-                    if sub_node.op == "Conv":
-                        spec = conv_params(self._graph, sub_node)
-                        print("Derived plan:", new_plan, "applied to", sub_node.name)
-                        apply_conv_partition(self._graph, sub_node, spec, new_plan)
-            elif plan.vertical:
-                pass
-            else:
-                pass
-        elif not plan.sum_node:
-            pass
+        if not plan.concat_node or not plan.sum_node:
+            self._derived_partition(last_node=last_node, last_plan=plan)
 
         return True
+    
+
+    def _derived_partition(self, last_node, last_plan):
+        if last_plan.n_out_channel != 0:
+            new_plan = ConvPartitionPlan(n_in_channel=last_plan.n_out_channel, in_channel_s=last_plan.out_channel_s, do_slice=False)
+            for sub_node in get_successors(last_node):
+                if sub_node.op == "Conv":
+                    spec = conv_params(self._graph, sub_node)
+                    print("Derived plan:", new_plan, "applied to", sub_node.name)
+                    apply_conv_partition(self._graph, sub_node, spec, new_plan)
+                
+        else:
+            raise RuntimeError(f"Not supported operation: removing Concat/Sum node when partitioning {last_node.name}")
 
 # input: model + hardware parameters
 # output: mapping
