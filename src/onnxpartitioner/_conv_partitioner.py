@@ -3,12 +3,12 @@ import onnx_graphsurgeon as gs
 from dataclasses import dataclass
 
 from .common import *
-from .graphsurgeon_utils import add_node
+from .graphsurgeon_utils import add_node, get_parents, get_parent_from_tensor, get_successors, remove_node
 
 
 def try_partition_conv(graph: gs.Graph, node: gs.Node, hardware: dict, direction: str, plan_func=None):
-    partition_plan = plan_func if plan_func != None else compute_partition_plan
-    # Step 1: extract
+    partition_plan = plan_func if plan_func != None else default_partition_plan
+    # Step 1: extract parameters
     spec = conv_params(graph, node)
 
     # Step 2: compute plan
@@ -18,7 +18,19 @@ def try_partition_conv(graph: gs.Graph, node: gs.Node, hardware: dict, direction
     print("Partition plan:", plan, "applied to", node.name)
 
     # Step 3: apply transformation
-    graph = apply_conv_partition(graph, node, spec, plan)
+    last_node = apply_conv_partition(graph, node, spec, plan)
+    if not plan.concat_node:
+        if plan.n_out_channel != 0:
+            new_plan = ConvPartitionPlan(n_in_channel=plan.n_out_channel, in_channel_s=plan.out_channel_s, do_slice=False)
+            for sub_node in get_successors(last_node):
+                print("Partition plan:", plan, "applied to", node.name)
+                apply_conv_partition(graph, sub_node, spec, new_plan)
+        elif plan.vertical:
+            pass
+        else:
+            pass
+    elif not plan.sum_node:
+        pass
 
     return True
 
@@ -32,8 +44,11 @@ class ConvPartitionPlan:
     n_o_seg: int = 0 # number of output height/weight segment
     o_hw: int = 0 # size of output height/weight segment
     vertical: bool = True # True: segment by height / False: by weight
+
+    # advanced control. This may affect other nodes
     concat_node: bool = True # whether to add concat node after
     sum_node: bool = True # whether to add add node after
+    do_slice: bool = True # whether do slice. If not, the input is from the last layer.
 
 
 def conv_params(graph: gs.Graph, node: gs.Node):
@@ -63,7 +78,7 @@ def conv_params(graph: gs.Graph, node: gs.Node):
     )
 
 
-def compute_partition_plan(spec: ConvSpec, hardware, direction):
+def default_partition_plan(spec: ConvSpec, hardware, direction):
     buffers = {'input_buffer': Buffer(spec.in_channel, spec.in_h * spec.in_w),
                'output_buffer': Buffer(spec.out_channel, spec.out_h * spec.out_w)}
     do_partition = False
@@ -130,21 +145,17 @@ def compute_partition_plan(spec: ConvSpec, hardware, direction):
 
 
 def apply_conv_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan: ConvPartitionPlan):
+    assert(node.op == "Conv")
     if plan.n_in_channel!=0:
-        input_channel_partition(graph, node, spec, plan)
+        last_node = input_channel_partition(graph, node, spec, plan)
     elif plan.n_out_channel!=0:
-        output_channel_partition(graph, node, spec, plan)
+        last_node = output_channel_partition(graph, node, spec, plan)
     elif plan.vertical:
-        height_partition(graph, node, spec, plan)
+        last_node = height_partition(graph, node, spec, plan)
     else:
-        width_partition(graph, node, spec, plan)
-    # -------- Remove original Conv node --------
-    node.inputs.clear()
-    node.outputs.clear()
-    graph.nodes.remove(node)
-    # Cleanup dangling tensors/nodes
+        last_node = width_partition(graph, node, spec, plan)
     graph.cleanup().toposort()
-    return graph
+    return last_node
 
 
 def input_channel_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan: ConvPartitionPlan):
@@ -156,45 +167,51 @@ def input_channel_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan
         values=np.zeros(spec.out_channel, dtype=node.inputs[2].dtype)
     )
     sub_op_outs = []
+    if not plan.do_slice:
+        concat = get_parent_from_tensor(node.inputs[0])
+        assert(concat.op == "Concat")
     for i in range(0, plan.n_in_channel):
         kernel = np.array(node.inputs[1].values, dtype=node.inputs[1].dtype)
         bias = node.inputs[2]
         starts = i*plan.in_channel_s
         ends = min(spec.in_channel, (i+1)*plan.in_channel_s)
-        # -------- Insert Slice nodes (split input feature map) --------
-        sliced_tensor = gs.Variable(
-            name=spec.in_name + '_slice_' + str(i) + '_for_' + node.name,
-            dtype=node.outputs[0].dtype,
-            shape=[spec.batch, ends-starts, spec.in_h, spec.in_w]
-        )
-        starts_tensor = gs.Constant(
-            name=spec.in_name + '_slice_starts_' + str(i) + '_for_' + node.name,
-            values=np.array([0, starts, 0, 0], dtype=np.int64)
-        )
-        ends_tensor = gs.Constant(
-            name=spec.in_name + '_slice_ends_' + str(i) + '_for_' + node.name,
-            values=np.array([spec.batch, ends, spec.in_h, spec.in_w], dtype=np.int64)
-        )
-        axes_tensor = gs.Constant(
-            name=spec.in_name + '_slice_axes_' + str(i) + '_for_' + node.name,
-            values=np.array([0, 1, 2, 3], dtype=np.int64)
-        )
+        if plan.do_slice:
+            # -------- Insert Slice nodes (split input feature map) --------
+            sliced_tensor = gs.Variable(
+                name=spec.in_name + '_slice_' + str(i) + '_for_' + node.name,
+                dtype=node.outputs[0].dtype,
+                shape=[spec.batch, ends-starts, spec.in_h, spec.in_w]
+            )
+            starts_tensor = gs.Constant(
+                name=spec.in_name + '_slice_starts_' + str(i) + '_for_' + node.name,
+                values=np.array([0, starts, 0, 0], dtype=np.int64)
+            )
+            ends_tensor = gs.Constant(
+                name=spec.in_name + '_slice_ends_' + str(i) + '_for_' + node.name,
+                values=np.array([spec.batch, ends, spec.in_h, spec.in_w], dtype=np.int64)
+            )
+            axes_tensor = gs.Constant(
+                name=spec.in_name + '_slice_axes_' + str(i) + '_for_' + node.name,
+                values=np.array([0, 1, 2, 3], dtype=np.int64)
+            )
 
-        inputs = [
-            node.inputs[0],
-            starts_tensor,
-            ends_tensor,
-            axes_tensor
-        ]
-        outputs = [sliced_tensor]
-        graph.add_node(op="Slice", inputs=inputs, outputs=outputs)
+            inputs = [
+                node.inputs[0],
+                starts_tensor,
+                ends_tensor,
+                axes_tensor
+            ]
+            outputs = [sliced_tensor]
+            graph.add_node(op="Slice", inputs=inputs, outputs=outputs)
 
+        # sliced_kernel = kernel[:, starts:ends, :, :]
+        else:
+            sliced_tensor = concat.inputs[i]
+        
         sliced_kernel = gs.Constant(
             name=spec.k_name + '_slice_' + str(i),
             values=kernel[:, starts:ends, :, :]
         )
-        # sliced_kernel = kernel[:, starts:ends, :, :]
-
         inputs = [
             sliced_tensor,
             sliced_kernel,
@@ -214,13 +231,16 @@ def input_channel_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan
             outputs=[sub_op_out], 
             attrs=attrs
         )
-        
+    if not plan.do_slice:
+        graph.remove_node(concat)
     # -------- Sum outputs back together --------
-    graph.add_node(op="Sum", name="sum_for_"+node.name, inputs=sub_op_outs, outputs=[node.outputs[0]])
-
+    outputs = graph.add_node(op="Sum", name="sum_for_"+node.name, inputs=sub_op_outs, outputs=[node.outputs[0]])
+    graph.remove_node(node)
+    return get_parent_from_tensor(outputs[0])
 
 
 def output_channel_partition(graph: gs.Graph, node:gs.Node, spec: ConvSpec, plan: ConvPartitionPlan):
+    is_last = node.outputs == graph.outputs
     concat_inputs = []
     for i in range(0, plan.n_out_channel):
         kernel = np.array(node.inputs[1].values, dtype=node.inputs[1].dtype)
@@ -247,7 +267,10 @@ def output_channel_partition(graph: gs.Graph, node:gs.Node, spec: ConvSpec, plan
             outputs=[sliced_out_tensor],
             attrs=attrs
         )
-    graph.add_node(op="Concat", inputs=concat_inputs, outputs=[node.outputs[0]], attrs={"axis": 1})
+    outputs = graph.add_node(op="Concat", inputs=concat_inputs, outputs=[node.outputs[0]], attrs={"axis": 1})
+    graph.remove_node(node)
+    return get_parent_from_tensor(outputs[0])
+
 
 
 def height_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan: ConvPartitionPlan):
@@ -319,12 +342,14 @@ def height_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan: ConvP
         )
 
     # -------- Concatenate outputs back together --------
-    graph.add_node(
+    outputs = graph.add_node(
         op="Concat",
         inputs=sub_op_outs,
         outputs=[node.outputs[0]],
         attrs={"axis": 2}
     )
+    graph.remove_node(node)
+    return get_parent_from_tensor(outputs[0])
 
 
 def width_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan: ConvPartitionPlan):
@@ -395,10 +420,12 @@ def width_partition(graph: gs.Graph, node: gs.Node, spec: ConvSpec, plan: ConvPa
         )
 
     # -------- Concatenate outputs back together --------
-    graph.add_node(
+    outputs = graph.add_node(
         op="Concat",
         inputs=sub_op_outs,
         outputs=[node.outputs[0]],
         attrs={"axis": 3}
     )
+    graph.remove_node(node)
+    return get_parent_from_tensor(outputs[0])
     

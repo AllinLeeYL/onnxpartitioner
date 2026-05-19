@@ -6,7 +6,8 @@ import numpy as np
 import onnx_graphsurgeon as gs
 
 from .common import Buffer
-from ._conv_partitioner import try_partition_conv
+from .graphsurgeon_utils import get_successors
+from ._conv_partitioner import ConvPartitionPlan, conv_params, default_partition_plan, apply_conv_partition
 
 
 def parse_argument():
@@ -128,9 +129,40 @@ class Partitioner:
 
     def _partition_node(self, node: gs.Graph):
         is_partitioned = False
-        if node.op == 'Conv':
-            is_partitioned = try_partition_conv(self._graph, node, self.hardware, self.direction, self.conv_partition_plan_func)
+        if node.op == "Conv":
+            is_partitioned = self._try_partition_conv(node)
         return is_partitioned
+    
+
+    def _try_partition_conv(self, node):
+        partition_plan = self.conv_partition_plan_func if self.conv_partition_plan_func != None else default_partition_plan
+        # Step 1: extract parameters
+        spec = conv_params(self._graph, node)
+
+        # Step 2: compute plan
+        plan = partition_plan(spec, self.hardware, self.direction)
+        if plan == None:
+            return False
+        print("Partition plan:", plan, "applied to", node.name)
+
+        # Step 3: apply transformation
+        last_node = apply_conv_partition(self._graph, node, spec, plan)
+        if not plan.concat_node:
+            if plan.n_out_channel != 0:
+                new_plan = ConvPartitionPlan(n_in_channel=plan.n_out_channel, in_channel_s=plan.out_channel_s, do_slice=False)
+                for sub_node in get_successors(last_node):
+                    if sub_node.op == "Conv":
+                        spec = conv_params(self._graph, sub_node)
+                        print("Derived plan:", new_plan, "applied to", sub_node.name)
+                        apply_conv_partition(self._graph, sub_node, spec, new_plan)
+            elif plan.vertical:
+                pass
+            else:
+                pass
+        elif not plan.sum_node:
+            pass
+
+        return True
 
 # input: model + hardware parameters
 # output: mapping
