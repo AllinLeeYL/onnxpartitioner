@@ -24,6 +24,8 @@ def parse_argument():
                         help='output buffer pixel size')
     parser.add_argument('--direction', choices=['auto', 'vertical', 'horizontal'], default='auto',
                         help='partition direction of 2d array')
+    parser.add_argument('--opset', type=int, default=23,
+                        help='onnx opset version of the partitioned model')
     args = parser.parse_args()
     return args
 
@@ -98,7 +100,7 @@ class Partitioner:
         pass
 
 
-    def partition(self, model: ModelProto) -> ModelProto:
+    def partition(self, model: ModelProto | gs.Graph) -> gs.Graph:
         """
         Initialize the graph partitioner.
 
@@ -112,10 +114,17 @@ class Partitioner:
         _graph : Graph | None
             graph format used in onnx_graphsurgeon.
         """
-        self._graph: gs.Graph = gs.import_onnx(model)
+        if isinstance(model, ModelProto):
+            self._graph: gs.Graph = gs.import_onnx(model)
+        elif isinstance(model, gs.Graph):
+            self._graph = model
+        else:
+            raise RuntimeError(f"unsupported model format: {type(model)}")
+        
+        self._graph.toposort()
         while self._partition_run():
             pass
-        return gs.export_onnx(self._graph)
+        return self._graph
 
 
     def _partition_run(self):
@@ -182,11 +191,11 @@ def main():
 
     # ------------ Partition -------------
     partitioner = Partitioner(hardware, direction=args.direction)
-    partitioned_model = partitioner.partition(model)
-    
+    partitioned_graph = partitioner.partition(model)
+    partitioned_model = gs.export_onnx(partitioned_graph)
 
     # ------------ Save model ------------
-    converted_model = version_converter.convert_version(partitioned_model, 25)
+    converted_model = version_converter.convert_version(partitioned_model, args.opset)
     onnx.save(converted_model, args.model[:-5]+"_partitioned.onnx")
 
     # Model metadata
