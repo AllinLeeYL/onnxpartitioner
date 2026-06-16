@@ -133,4 +133,4 @@ The operations are all based on the ONNX graph, so that I can validate the corre
 
 ## Known Issues
 
-* When testing with `--use_cuda`, the difference between the original model and the partitioned one becomes noticeable. This may be caused by the difference in computation precision and backend implementation between the CPU and the GPU. 
+* When testing with `--use_cuda`, the difference between the original model and the partitioned one becomes noticeable. This may be caused by the difference in computation precision and backend implementation between the CPU and the GPU. When running check scripts, ausch as `_check_conv_partitioner.py`, I suggest using `--rtol 1e-2 --atol 1e-3` when flagging `--use_cuda`.
