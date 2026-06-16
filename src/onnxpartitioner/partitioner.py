@@ -13,7 +13,7 @@ from ._conv_partitioner import ConvPartitionPlan, conv_params, default_partition
 def parse_argument():
     parser = argparse.ArgumentParser(description='ONNX model partitioner')
     parser.add_argument('model', type=str,  
-                        help='path to model.pt file.')
+                        help='path to model.onnx file.')
     parser.add_argument('--in_channel', type=int, default=256,
                         help='input buffer channel size')
     parser.add_argument('--in_pixel', type=int, default=1024*1024,

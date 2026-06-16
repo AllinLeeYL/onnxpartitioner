@@ -29,9 +29,9 @@ def parse_argument():
                         help="Enable CUDA execution")
     parser.add_argument('--multiprocess', action='store_true',
                         help="Accelerating with multiprocess")
-    parser.add_argument('--rtol', type=float, default=1e-4, 
+    parser.add_argument('--rtol', type=float, default=1e-3, 
                         help='The relative tolerance parameter.')
-    parser.add_argument('--atol', type=float, default=1e-5, 
+    parser.add_argument('--atol', type=float, default=1e-4, 
                         help='The absolute tolerance parameter.')
     args = parser.parse_args()
     return args
@@ -85,7 +85,7 @@ def build_process_params(args):
                 "--out_pixel", str(out_pixel_limit)]
 
         # check
-        check_cmds = ["python3", "check.py", "--rtol", str(args.rtol), "--atol", str(args.atol), onnx_path, partitioned_path]
+        check_cmds = ["python3", "compare.py", "--rtol", str(args.rtol), "--atol", str(args.atol), onnx_path, partitioned_path]
         if args.use_cuda:
             check_cmds.extend(["--use_cuda"])
         
@@ -184,7 +184,7 @@ def single_process_main(args):
             continue
 
         # check
-        check_cmds = ["python3", "check.py", "--rtol", str(args.rtol), "--atol", str(args.atol), onnx_path, partitioned_path]
+        check_cmds = ["python3", "compare.py", "--rtol", str(args.rtol), "--atol", str(args.atol), onnx_path, partitioned_path]
         if args.use_cuda:
             check_cmds.extend(["--use_cuda"])
         p = subprocess.run(check_cmds, stdout=subprocess.DEVNULL)

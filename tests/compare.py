@@ -10,7 +10,7 @@ sess_options = ort.SessionOptions()
 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
 
 def parse_argument():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser("compare")
     parser.add_argument('model1', type=str,  
                         help='path to model1.onnx file.')
     parser.add_argument('model2', type=str,  
